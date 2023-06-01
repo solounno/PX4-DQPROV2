@@ -1,15 +1,16 @@
-uint64 error_count
-float32 x
-float32 y
-float32 z
-float32 range_ga
-float32 scaling
-float32 temperature
+uint64 timestamp          # time since system start (microseconds)
+uint64 timestamp_sample
 
-int16 x_raw
-int16 y_raw
-int16 z_raw
+uint32 device_id          # unique device ID for the sensor that does not change between power cycles
 
-uint32 device_id	# unique device ID for the sensor that does not change between power cycles
-bool  is_external  # if true the mag is external (i.e. not built into the board)
+float32 x                 # magnetic field in the FRD board frame X-axis in Gauss
+float32 y                 # magnetic field in the FRD board frame Y-axis in Gauss
+float32 z                 # magnetic field in the FRD board frame Z-axis in Gauss
 
+float32 temperature       # temperature in degrees Celsius
+
+uint32 error_count
+
+bool is_external	# if true the mag is external (i.e. not built into the board)
+
+uint8 ORB_QUEUE_LENGTH = 4

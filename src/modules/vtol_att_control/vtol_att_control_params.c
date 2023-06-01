@@ -40,17 +40,6 @@
  */
 
 /**
- * VTOL number of engines
- *
- * @min 0
- * @max 8
- * @increment 1
- * @decimal 0
- * @group VTOL Attitude Control
- */
-PARAM_DEFINE_INT32(VT_MOT_COUNT, 0);
-
-/**
  * Idle speed of VTOL when in multicopter mode
  *
  * @unit us
@@ -82,6 +71,7 @@ PARAM_DEFINE_INT32(VT_FW_PERM_STAB, 0);
  * @min 0
  * @max 2
  * @decimal 0
+ * @reboot_required true
  * @group VTOL Attitude Control
  */
 PARAM_DEFINE_INT32(VT_TYPE, 0);
@@ -159,11 +149,12 @@ PARAM_DEFINE_FLOAT(VT_B_TRANS_THR, 0.0f);
  *
  * The approximate deceleration during a back transition in m/s/s
  * Used to calculate back transition distance in mission mode. A lower value will make the VTOL transition further from the destination waypoint.
+ * For standard vtol and tiltrotors a controller is used to track this value during the transition.
  *
- * @unit m/s/s
- * @min 0.00
- * @max 20.00
- * @increment 1
+ * @unit m/s^2
+ * @min 0.5
+ * @max 10
+ * @increment 0.1
  * @decimal 2
  * @group VTOL Attitude Control
  */
@@ -224,6 +215,24 @@ PARAM_DEFINE_FLOAT(VT_TRANS_TIMEOUT, 15.0f);
 PARAM_DEFINE_FLOAT(VT_TRANS_MIN_TM, 2.0f);
 
 /**
+ * Front transition minimum time pressure scaling
+ *
+ * Enables scaling of minimum transition time by air pressure.
+ * Under standard atmospheric conditions:
+ * a value of 1.0 equals +- 1 extra second every 1000m above sea level
+ * a value of 4.0 equals +- 1 extra second every 250m above sea level
+ *
+ * Make sure that VT_TRANS_TIMEOUT is set large enough to accomodate.
+ * Set to -1 to disable
+ *
+ * @unit s
+ * @min -1.0
+ * @max 20.0
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_FLOAT(VT_TRANS_TM_SCL, -1.0f);
+
+/**
  * QuadChute Altitude
  *
  * Minimum altitude for fixed wing flight, when in fixed wing the altitude drops below this altitude
@@ -272,50 +281,12 @@ PARAM_DEFINE_INT32(VT_FW_QC_R, 0);
  *
  * The duration of the front transition when there is no airspeed feedback available.
  *
- * @unit seconds
+ * @unit s
  * @min 1.0
  * @max 30.0
  * @group VTOL Attitude Control
  */
 PARAM_DEFINE_FLOAT(VT_F_TR_OL_TM, 6.0f);
-
-/**
- * Weather-vane yaw rate scale.
- *
- * The desired yawrate from the controller will be scaled in order to avoid
- * yaw fighting against the wind.
- *
- * @min 0.0
- * @max 1.0
- * @increment 0.01
- * @decimal 3
- * @group VTOL Attitude Control
- */
-PARAM_DEFINE_FLOAT(VT_WV_YAWR_SCL, 0.15f);
-
-/**
- * Enable weather-vane mode takeoff for missions
- *
- * @boolean
- * @group Mission
- */
-PARAM_DEFINE_INT32(VT_WV_TKO_EN, 0);
-
-/**
- * Weather-vane mode for loiter
- *
- * @boolean
- * @group Mission
- */
-PARAM_DEFINE_INT32(VT_WV_LTR_EN, 0);
-
-/**
- * Weather-vane mode landings for missions
- *
- * @boolean
- * @group Mission
- */
-PARAM_DEFINE_INT32(VT_WV_LND_EN, 0);
 
 /**
  * The channel number of motors that must be turned off in fixed wing mode.
@@ -327,3 +298,77 @@ PARAM_DEFINE_INT32(VT_WV_LND_EN, 0);
  * @group VTOL Attitude Control
  */
 PARAM_DEFINE_INT32(VT_FW_MOT_OFFID, 0);
+
+/**
+ * The channel number of motors which provide lift during hover.
+ *
+ * @min 0
+ * @max 12345678
+ * @increment 1
+ * @decimal 0
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_INT32(VT_MOT_ID, 0);
+
+/**
+ * Differential thrust in forwards flight.
+ *
+ * Set to 1 to enable differential thrust in fixed-wing flight.
+ *
+ * @min 0
+ * @max 1
+ * @decimal 0
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_INT32(VT_FW_DIFTHR_EN, 0);
+
+/**
+ * Differential thrust scaling factor
+ *
+ * This factor specifies how the yaw input gets mapped to differential thrust in forwards flight.
+ *
+ * @min 0.0
+ * @max 1.0
+ * @decimal 2
+ * @increment 0.1
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_FLOAT(VT_FW_DIFTHR_SC, 0.1f);
+
+/**
+ * Backtransition deceleration setpoint to pitch feedforward gain.
+ *
+ *
+ * @unit rad s^2/m
+ * @min 0
+ * @max 0.2
+ * @decimal 1
+ * @increment 0.05
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_FLOAT(VT_B_DEC_FF, 0.12f);
+
+/**
+ * Backtransition deceleration setpoint to pitch I gain.
+ *
+ *
+ * @unit rad s/m
+ * @min 0
+ * @max 0.3
+ * @decimal 1
+ * @increment 0.05
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_FLOAT(VT_B_DEC_I, 0.1f);
+
+/**
+ * Enable the usage of AUX outputs for hover motors.
+ *
+ * Set this parameter to true if the vehicle's hover motors are connected to the FMU (AUX) port.
+ * Not required for boards that only have a FMU, and no IO.
+ * Only applies for standard VTOL and tiltrotor.
+ *
+ * @boolean
+ * @group VTOL Attitude Control
+ */
+PARAM_DEFINE_INT32(VT_MC_ON_FMU, 0);

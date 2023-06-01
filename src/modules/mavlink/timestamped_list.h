@@ -55,9 +55,10 @@ class TimestampedList
 public:
 	TimestampedList(int num_items)
 	{
-		_list = new item_t[num_items];
+		_list = new item_s[num_items];
 		_list_len = num_items;
 	}
+
 	~TimestampedList()
 	{
 		delete[] _list;
@@ -147,12 +148,12 @@ public:
 	TimestampedList operator=(const TimestampedList &) = delete;
 
 private:
-	typedef struct {
+	struct item_s {
 		hrt_abstime timestamp_us = 0; // 0 signals inactive.
 		T value;
-	} item_t;
+	};
 
-	item_t *_list = nullptr;
+	item_s *_list = nullptr;
 	int _list_len = 0;
 	int _current_i = -1;
 };

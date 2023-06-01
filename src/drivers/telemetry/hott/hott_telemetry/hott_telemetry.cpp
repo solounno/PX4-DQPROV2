@@ -44,9 +44,9 @@
  */
 
 #include <fcntl.h>
-#include <px4_config.h>
-#include <px4_defines.h>
-#include <px4_tasks.h>
+#include <px4_platform_common/px4_config.h>
+#include <px4_platform_common/defines.h>
+#include <px4_platform_common/tasks.h>
 #include <poll.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -55,7 +55,6 @@
 #include <unistd.h>
 #include <systemlib/err.h>
 #include <perf/perf_counter.h>
-#include <systemlib/systemlib.h>
 
 #include "../comms.h"
 #include "../messages.h"
@@ -158,7 +157,7 @@ send_data(int uart, uint8_t *buffer, size_t size)
 
 	/* A hack the reads out what was written so the next read from the receiver doesn't get it. */
 	/* TODO: Fix this!! */
-	uint8_t dummy[size];
+	uint8_t dummy[MAX_MESSAGE_BUFFER_SIZE];
 	read(uart, &dummy, size);
 
 	return PX4_OK;
@@ -167,8 +166,6 @@ send_data(int uart, uint8_t *buffer, size_t size)
 int
 hott_telemetry_thread_main(int argc, char *argv[])
 {
-	warnx("starting");
-
 	connect_count = perf_alloc(PC_COUNT,	"reconnects       ");
 	recon_port = perf_alloc(PC_COUNT,		"reopen port      ");
 	reqs_count = perf_alloc(PC_COUNT,		"requests        ");

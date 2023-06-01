@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2013-2015 PX4 Development Team. All rights reserved.
+ *  Copyright (C) 2013-2019 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,20 +31,25 @@
  *
  ****************************************************************************/
 
+/**
+ * @file test_mathlib.cpp
+ * Tests for the PX4 math library.
+ */
+
 #include <unit_test.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <float.h>
 #include <math.h>
-#include <px4_config.h>
+#include <px4_platform_common/px4_config.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <px4_log.h>
+#include <px4_platform_common/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -73,6 +78,7 @@ private:
 	bool testQuaternionfrom_dcm();
 	bool testQuaternionfrom_euler();
 	bool testQuaternionRotate();
+	bool testFinite();
 };
 
 #define TEST_OP(_title, _op) { unsigned int n = 30000; hrt_abstime t0, t1; t0 = hrt_absolute_time(); for (unsigned int j = 0; j < n; j++) { _op; }; t1 = hrt_absolute_time(); PX4_INFO(_title ": %.6fus", (double)(t1 - t0) / n); }
@@ -255,8 +261,7 @@ bool MathlibTest::testQuaternionfrom_dcm()
 	matrix::Matrix3f R_orig;
 	R_orig.identity();
 
-	matrix::Quatf q;
-	q.from_dcm(R_orig);
+	matrix::Quatf q(R_orig);
 
 	for (unsigned i = 0; i < 4; i++) {
 		ut_assert("matrix::Quatf method 'from_dcm()' outside tolerance!", fabsf(q(i) - q_true(i)) < tol);
@@ -273,8 +278,7 @@ bool MathlibTest::testQuaternionfrom_euler()
 	matrix::Matrix3f R_orig;
 	R_orig.identity();
 
-	matrix::Quatf q;
-	q.from_dcm(R_orig);
+	matrix::Quatf q(R_orig);
 
 	q_true = matrix::Eulerf(0.3f, 0.2f, 0.1f);
 	q = {0.9833f, 0.1436f, 0.1060f, 0.0343f};
@@ -366,6 +370,24 @@ bool MathlibTest::testQuaternionRotate()
 	return true;
 }
 
+bool MathlibTest::testFinite()
+{
+	ut_assert("PX4_ISFINITE(0.0f)", PX4_ISFINITE(0.0f) == true);
+	ut_assert("PX4_ISFINITE(-0.0f)", PX4_ISFINITE(-0.0f) == true);
+	ut_assert("PX4_ISFINITE(1.0f)", PX4_ISFINITE(1.0f) == true);
+	ut_assert("PX4_ISFINITE(-1.0f)", PX4_ISFINITE(-1.0f) == true);
+
+	ut_assert("PX4_ISFINITE(NAN)", PX4_ISFINITE(NAN) == false);
+	ut_assert("PX4_ISFINITE(1/0)", PX4_ISFINITE(1.0f / 0.0f) == false);
+	ut_assert("PX4_ISFINITE(0/0)", PX4_ISFINITE(0.0f / 0.0f) == false);
+	ut_assert("PX4_ISFINITE(INFINITY)", PX4_ISFINITE(INFINITY) == false);
+	ut_assert("PX4_ISFINITE(NAN * INFINITY)", PX4_ISFINITE(NAN * INFINITY) == false);
+	ut_assert("PX4_ISFINITE(NAN * 1.0f)", PX4_ISFINITE(NAN * 1.0f) == false);
+	ut_assert("PX4_ISFINITE(INFINITY * 2.0f)", PX4_ISFINITE(INFINITY * 2.0f) == false);
+
+	return true;
+}
+
 bool MathlibTest::run_tests()
 {
 	ut_run_test(testVector2);
@@ -376,6 +398,7 @@ bool MathlibTest::run_tests()
 	ut_run_test(testQuaternionfrom_dcm);
 	ut_run_test(testQuaternionfrom_euler);
 	ut_run_test(testQuaternionRotate);
+	ut_run_test(testFinite);
 
 	return (_tests_failed == 0);
 }

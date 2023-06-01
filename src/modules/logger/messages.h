@@ -33,17 +33,21 @@
 
 #pragma once
 
+#include <cstdint>
+
 enum class ULogMessageType : uint8_t {
 	FORMAT = 'F',
 	DATA = 'D',
 	INFO = 'I',
 	INFO_MULTIPLE = 'M',
 	PARAMETER = 'P',
+	PARAMETER_DEFAULT = 'Q',
 	ADD_LOGGED_MSG = 'A',
 	REMOVE_LOGGED_MSG = 'R',
 	SYNC = 'S',
 	DROPOUT = 'O',
 	LOGGING = 'L',
+	LOGGING_TAGGED = 'C',
 	FLAG_BITS = 'B',
 };
 
@@ -67,7 +71,7 @@ struct ulog_message_format_s {
 	uint16_t msg_size; //size of message - ULOG_MSG_HEADER_LEN
 	uint8_t msg_type = static_cast<uint8_t>(ULogMessageType::FORMAT);
 
-	char format[2096];
+	char format[1500];
 };
 
 struct ulog_message_add_logged_s {
@@ -133,6 +137,16 @@ struct ulog_message_logging_s {
 	char message[128]; //defines the maximum length of a logged message string
 };
 
+struct ulog_message_logging_tagged_s {
+	uint16_t msg_size; //size of message - ULOG_MSG_HEADER_LEN
+	uint8_t msg_type = static_cast<uint8_t>(ULogMessageType::LOGGING_TAGGED);
+
+	uint8_t log_level; //same levels as in the linux kernel
+	uint16_t tag;
+	uint64_t timestamp;
+	char message[128]; //defines the maximum length of a logged message string
+};
+
 struct ulog_message_parameter_header_s {
 	uint16_t msg_size;
 	uint8_t msg_type = static_cast<uint8_t>(ULogMessageType::PARAMETER);
@@ -141,8 +155,29 @@ struct ulog_message_parameter_header_s {
 	char key[255];
 };
 
+enum class ulog_parameter_default_type_t : uint8_t {
+	system = (1 << 0),
+	current_setup = (1 << 1) //airframe default
+};
+
+inline ulog_parameter_default_type_t operator|(ulog_parameter_default_type_t a, ulog_parameter_default_type_t b)
+{
+	return static_cast<ulog_parameter_default_type_t>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+
+struct ulog_message_parameter_default_header_s {
+	uint16_t msg_size;
+	uint8_t msg_type = static_cast<uint8_t>(ULogMessageType::PARAMETER_DEFAULT);
+
+	ulog_parameter_default_type_t default_types;
+	uint8_t key_len;
+	char key[255];
+};
+
 
 #define ULOG_INCOMPAT_FLAG0_DATA_APPENDED_MASK (1<<0)
+
+#define ULOG_COMPAT_FLAG0_DEFAULT_PARAMETERS_MASK (1<<0)
 
 struct ulog_message_flag_bits_s {
 	uint16_t msg_size;

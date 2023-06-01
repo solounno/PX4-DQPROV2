@@ -39,19 +39,14 @@
 
 #pragma once
 
-#include <platforms/px4_defines.h>
+#include "Limits.hpp"
+
+#include <matrix/matrix/math.hpp>
 
 namespace math
 {
 
-// Type-safe signum function
-template<typename T>
-int sign(T val)
-{
-	return (T(0) < val) - (val < T(0));
-}
-
-// Type-safe signum function with zero treted as positive
+// Type-safe signum function with zero treated as positive
 template<typename T>
 int signNoZero(T val)
 {
@@ -114,7 +109,7 @@ const T deadzone(const T &value, const T &dz)
 	T x = constrain(value, (T) - 1, (T) 1);
 	T dzc = constrain(dz, (T) 0, (T) 0.99);
 	// Rescale the input such that we get a piecewise linear function that will be continuous with applied deadzone
-	T out = (x - sign(x) * dzc) / (1 - dzc);
+	T out = (x - matrix::sign(x) * dzc) / (1 - dzc);
 	// apply the deadzone (values zero around the middle)
 	return out * (fabsf(x) > dzc);
 }
@@ -146,10 +141,73 @@ const T gradual(const T &value, const T &x_low, const T &x_high, const T &y_low,
 
 	} else {
 		/* linear function between the two points */
-		float a = (y_high - y_low) / (x_high - x_low);
-		float b = y_low - a * x_low;
+		T a = (y_high - y_low) / (x_high - x_low);
+		T b = y_low - a * x_low;
 		return  a * value + b;
 	}
+}
+
+/*
+ * Constant, linear, linear, constant function with the three corner points as parameters
+ *  y_high               -------
+ *                      /
+ *                    /
+ *  y_middle        /
+ *                /
+ *               /
+ *              /
+ * y_low -------
+ *         x_low x_middle x_high
+ */
+template<typename T>
+const T gradual3(const T &value,
+		 const T &x_low, const T &x_middle, const T &x_high,
+		 const T &y_low, const T &y_middle, const T &y_high)
+{
+	if (value < x_middle) {
+		return gradual(value, x_low, x_middle, y_low, y_middle);
+
+	} else {
+		return gradual(value, x_middle, x_high, y_middle, y_high);
+	}
+}
+
+/*
+ * Squareroot, linear function with fixed corner point at intersection (1,1)
+ *                     /
+ *      linear        /
+ *                   /
+ * 1                /
+ *                /
+ *      sqrt     |
+ *              |
+ * 0     -------
+ *             0    1
+ */
+template<typename T>
+const T sqrt_linear(const T &value)
+{
+	if (value < static_cast<T>(0)) {
+		return static_cast<T>(0);
+
+	} else if (value < static_cast<T>(1)) {
+		return sqrtf(value);
+
+	} else {
+		return value;
+	}
+}
+
+/*
+ * Linear interpolation between 2 points a, and b.
+ * s=0 return a
+ * s=1 returns b
+ * Any value for s is valid.
+ */
+template<typename T>
+const T lerp(const T &a, const T &b, const T &s)
+{
+	return (static_cast<T>(1) - s) * a + s * b;
 }
 
 } /* namespace math */

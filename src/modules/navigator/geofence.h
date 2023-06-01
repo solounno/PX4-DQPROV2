@@ -40,19 +40,20 @@
 
 #pragma once
 
-#include <cfloat>
+#include <float.h>
 
-#include <px4_module_params.h>
+#include <lib/mathlib/mathlib.h>
+#include <px4_platform_common/module_params.h>
 #include <drivers/drv_hrt.h>
 #include <lib/ecl/geo/geo.h>
-#include <px4_defines.h>
+#include <px4_platform_common/defines.h>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/home_position.h>
 #include <uORB/topics/vehicle_global_position.h>
 #include <uORB/topics/vehicle_gps_position.h>
 #include <uORB/topics/vehicle_air_data.h>
 
-#define GEOFENCE_FILENAME PX4_ROOTFSDIR"/fs/microsd/etc/geofence.txt"
+#define GEOFENCE_FILENAME PX4_STORAGEDIR"/etc/geofence.txt"
 
 class Navigator;
 
@@ -62,7 +63,7 @@ public:
 	Geofence(Navigator *navigator);
 	Geofence(const Geofence &) = delete;
 	Geofence &operator=(const Geofence &) = delete;
-	~Geofence();
+	virtual ~Geofence();
 
 	/* Altitude mode, corresponding to the param GF_ALTMODE */
 	enum {
@@ -97,6 +98,13 @@ public:
 	 */
 	bool check(const struct mission_item_s &mission_item);
 
+
+	bool isCloserThanMaxDistToHome(double lat, double lon, float altitude);
+
+	bool isBelowMaxAltitude(float altitude);
+
+	virtual bool isInsidePolygonOrCircle(double lat, double lon, float altitude);
+
 	int clearDm();
 
 	bool valid();
@@ -124,11 +132,21 @@ public:
 
 	bool isEmpty() { return _num_polygons == 0; }
 
-	int getAltitudeMode() { return _param_altitude_mode.get(); }
-	int getSource() { return _param_source.get(); }
-	int getGeofenceAction() { return _param_action.get(); }
+	int getAltitudeMode() { return _param_gf_altmode.get(); }
+	int getSource() { return _param_gf_source.get(); }
+	int getGeofenceAction() { return _param_gf_action.get(); }
+	float getMaxHorDistanceHome() { return _param_gf_max_hor_dist.get(); }
+	float getMaxVerDistanceHome() { return _param_gf_max_ver_dist.get(); }
 
 	bool isHomeRequired();
+
+	/**
+	 * Check if a point passes the Geofence test.
+	 * In addition to checkPolygons(), this takes all additional parameters into account.
+	 *
+	 * @return false for a geofence violation
+	 */
+	bool checkAll(double lat, double lon, float altitude);
 
 	/**
 	 * print Geofence status to the console
@@ -158,15 +176,15 @@ private:
 	map_projection_reference_s _projection_reference = {}; ///< reference to convert (lon, lat) to local [m]
 
 	DEFINE_PARAMETERS(
-		(ParamInt<px4::params::GF_ACTION>) _param_action,
-		(ParamInt<px4::params::GF_ALTMODE>) _param_altitude_mode,
-		(ParamInt<px4::params::GF_SOURCE>) _param_source,
-		(ParamInt<px4::params::GF_COUNT>) _param_counter_threshold,
-		(ParamFloat<px4::params::GF_MAX_HOR_DIST>) _param_max_hor_distance,
-		(ParamFloat<px4::params::GF_MAX_VER_DIST>) _param_max_ver_distance
+		(ParamInt<px4::params::GF_ACTION>) _param_gf_action,
+		(ParamInt<px4::params::GF_ALTMODE>) _param_gf_altmode,
+		(ParamInt<px4::params::GF_SOURCE>) _param_gf_source,
+		(ParamInt<px4::params::GF_COUNT>) _param_gf_count,
+		(ParamFloat<px4::params::GF_MAX_HOR_DIST>) _param_gf_max_hor_dist,
+		(ParamFloat<px4::params::GF_MAX_VER_DIST>) _param_gf_max_ver_dist
 	)
 
-	uORB::Subscription<vehicle_air_data_s>	_sub_airdata;
+	uORB::SubscriptionData<vehicle_air_data_s>	_sub_airdata;
 
 	int _outside_counter{0};
 	uint16_t _update_counter{0}; ///< dataman update counter: if it does not match, we polygon data was updated
@@ -188,13 +206,7 @@ private:
 	 */
 	bool checkPolygons(double lat, double lon, float altitude);
 
-	/**
-	 * Check if a point passes the Geofence test.
-	 * In addition to checkPolygons(), this takes all additional parameters into account.
-	 *
-	 * @return false for a geofence violation
-	 */
-	bool checkAll(double lat, double lon, float altitude);
+
 
 	bool checkAll(const vehicle_global_position_s &global_position);
 	bool checkAll(const vehicle_global_position_s &global_position, float baro_altitude_amsl);

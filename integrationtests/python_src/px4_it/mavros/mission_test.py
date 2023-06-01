@@ -47,12 +47,13 @@ import glob
 import json
 import math
 import os
-import px4tools
+from px4tools import ulog
 import sys
 from mavros import mavlink
 from mavros_msgs.msg import Mavlink, Waypoint, WaypointReached
 from mavros_test_common import MavrosTestCommon
 from pymavlink import mavutil
+from six.moves import xrange
 from threading import Thread
 
 
@@ -60,8 +61,10 @@ def get_last_log():
     try:
         log_path = os.environ['PX4_LOG_DIR']
     except KeyError:
-        log_path = os.path.join(os.environ['HOME'],
-                                '.ros/rootfs/fs/microsd/log')
+        try:
+            log_path = os.path.join(os.environ['ROS_HOME'], 'log')
+        except KeyError:
+            log_path = os.path.join(os.environ['HOME'], '.ros/log')
     last_log_dir = sorted(glob.glob(os.path.join(log_path, '*')))[-1]
     last_log = sorted(glob.glob(os.path.join(last_log_dir, '*.ulg')))[-1]
     return last_log
@@ -284,7 +287,7 @@ class MavrosMissionTest(MavrosTestCommon):
             if (waypoint.command == mavutil.mavlink.MAV_CMD_NAV_VTOL_LAND or
                     waypoint.command == mavutil.mavlink.MAV_CMD_NAV_LAND):
                 self.wait_for_landed_state(
-                    mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND, 60, index)
+                    mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND, 120, index)
 
         self.set_arm(False, 5)
         self.clear_wps(5)
@@ -292,9 +295,9 @@ class MavrosMissionTest(MavrosTestCommon):
         rospy.loginfo("mission done, calculating performance metrics")
         last_log = get_last_log()
         rospy.loginfo("log file {0}".format(last_log))
-        data = px4tools.read_ulog(last_log).concat(dt=0.1)
-        data = px4tools.compute_data(data)
-        res = px4tools.estimator_analysis(data, False)
+        data = ulog.read_ulog(last_log).concat(dt=0.1)
+        data = ulog.compute_data(data)
+        res = ulog.estimator_analysis(data, False)
 
         # enforce performance
         self.assertTrue(abs(res['roll_error_mean']) < 5.0, str(res))

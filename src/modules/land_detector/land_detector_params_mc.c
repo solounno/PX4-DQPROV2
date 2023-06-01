@@ -68,51 +68,6 @@ PARAM_DEFINE_FLOAT(LNDMC_XY_VEL_MAX, 1.5f);
 PARAM_DEFINE_FLOAT(LNDMC_ROT_MAX, 20.0f);
 
 /**
- * Multicopter specific force threshold
- *
- * Multicopter threshold on the specific force measured by accelerometers in m/s^2 for free-fall detection
- *
- * @unit m/s^2
- * @min 0.1
- * @max 10
- * @decimal 2
- *
- * @group Land Detector
- */
-PARAM_DEFINE_FLOAT(LNDMC_FFALL_THR, 2.0f);
-
-/**
- * Multicopter sub-hover throttle scaling
- *
- * The range between throttle_min and throttle_hover is scaled
- * by this parameter to define how close to minimum throttle
- * the current throttle value needs to be in order to get
- * accepted as landed.
- *
- * @min 0.05
- * @max 0.5
- * @decimal 2
- *
- * @group Land Detector
- */
-PARAM_DEFINE_FLOAT(LNDMC_THR_RANGE, 0.1f);
-
-/**
- * Multicopter free-fall trigger time
- *
- * Seconds (decimal) that freefall conditions have to met before triggering a freefall.
- * Minimal value is limited by LAND_DETECTOR_UPDATE_RATE=50Hz in landDetector.h
- *
- * @unit s
- * @min 0.02
- * @max 5
- * @decimal 2
- *
- * @group Land Detector
- */
-PARAM_DEFINE_FLOAT(LNDMC_FFALL_TTRI, 0.3);
-
-/**
  * Maximum altitude for multicopters
  *
  * The system will obey this limit as a
@@ -129,3 +84,17 @@ PARAM_DEFINE_FLOAT(LNDMC_FFALL_TTRI, 0.3);
  *
  */
 PARAM_DEFINE_FLOAT(LNDMC_ALT_MAX, -1.0f);
+
+/**
+ * Ground effect altitude for multicopters
+ *
+ * The height above ground below which ground effect creates barometric altitude errors.
+ * A negative value indicates no ground effect.
+ *
+ * @unit m
+ * @min -1
+ * @decimal 2
+ * @group Land Detector
+ *
+ */
+PARAM_DEFINE_FLOAT(LNDMC_ALT_GND, -1.0f);

@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2013-2017 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2013-2019 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -37,6 +37,7 @@
  * @author Lorenz Meier <lm@inf.ethz.ch>
  * @author Thomas Gubler <thomasgubler@student.ethz.ch>
  * @author Sander Smeets <sander@droneslab.com>
+ * @author Nuno Marques <nuno.marques@dronesolutions.io>
  */
 
 #include "mission_feasibility_checker.h"
@@ -45,16 +46,23 @@
 #include "navigator.h"
 
 #include <drivers/drv_pwm_output.h>
-#include <fw_pos_control_l1/Landingslope.hpp>
 #include <lib/ecl/geo/geo.h>
-#include <mathlib/mathlib.h>
+#include <lib/mathlib/mathlib.h>
+#include <lib/landing_slope/Landingslope.hpp>
 #include <systemlib/mavlink_log.h>
+#include <uORB/Subscription.hpp>
+#include <uORB/topics/position_controller_landing_status.h>
 
 bool
 MissionFeasibilityChecker::checkMissionFeasible(const mission_s &mission,
 		float max_distance_to_1st_waypoint, float max_distance_between_waypoints,
 		bool land_start_req)
 {
+	// trivial case: A mission with length zero cannot be valid
+	if ((int)mission.count <= 0) {
+		return false;
+	}
+
 	bool failed = false;
 	bool warned = false;
 
@@ -79,61 +87,46 @@ MissionFeasibilityChecker::checkMissionFeasible(const mission_s &mission,
 	failed = failed || !checkGeofence(mission, home_alt, home_valid);
 	failed = failed || !checkHomePositionAltitude(mission, home_alt, home_alt_valid, warned);
 
-	// VTOL always respects rotary wing feasibility
-	if (_navigator->get_vstatus()->is_rotary_wing || _navigator->get_vstatus()->is_vtol) {
-		failed = failed || !checkRotarywing(mission, home_alt, home_alt_valid);
+	if (_navigator->get_vstatus()->is_vtol) {
+		failed = failed || !checkVTOL(mission, home_alt, false);
+
+	} else if (_navigator->get_vstatus()->vehicle_type == vehicle_status_s::VEHICLE_TYPE_ROTARY_WING) {
+		failed = failed || !checkRotarywing(mission, home_alt);
 
 	} else {
-		failed = failed || !checkFixedwing(mission, home_alt, home_alt_valid, land_start_req);
+		failed = failed || !checkFixedwing(mission, home_alt, land_start_req);
 	}
 
 	return !failed;
 }
 
 bool
-MissionFeasibilityChecker::checkRotarywing(const mission_s &mission, float home_alt, bool home_alt_valid)
+MissionFeasibilityChecker::checkRotarywing(const mission_s &mission, float home_alt)
 {
-	for (size_t i = 0; i < mission.count; i++) {
-		struct mission_item_s missionitem = {};
-		const ssize_t len = sizeof(struct mission_item_s);
-
-		if (dm_read((dm_item_t)mission.dataman_id, i, &missionitem, len) != len) {
-			/* not supposed to happen unless the datamanager can't access the SD card, etc. */
-			return false;
-		}
-
-		// look for a takeoff waypoint
-		if (missionitem.nav_cmd == NAV_CMD_TAKEOFF) {
-			// make sure that the altitude of the waypoint is at least one meter larger than the altitude acceptance radius
-			// this makes sure that the takeoff waypoint is not reached before we are at least one meter in the air
-			const float takeoff_alt = missionitem.altitude_is_relative ? missionitem.altitude : missionitem.altitude - home_alt;
-
-			// check if we should use default acceptance radius
-			float acceptance_radius = _navigator->get_altitude_acceptance_radius();
-
-			// if a specific acceptance radius has been defined, use that one instead
-			if (missionitem.acceptance_radius > NAV_EPSILON_POSITION) {
-				acceptance_radius = missionitem.acceptance_radius;
-			}
-
-			if (takeoff_alt - 1.0f < acceptance_radius) {
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: Takeoff altitude too low!");
-				return false;
-			}
-		}
-	}
-
-	// all checks have passed
-	return true;
+	/*
+	 * Perform check and issue feedback to the user
+	 * Mission is only marked as feasible if takeoff check passes
+	 */
+	return checkTakeoff(mission, home_alt);
 }
 
 bool
-MissionFeasibilityChecker::checkFixedwing(const mission_s &mission, float home_alt, bool home_alt_valid,
-		bool land_start_req)
+MissionFeasibilityChecker::checkFixedwing(const mission_s &mission, float home_alt, bool land_start_req)
 {
 	/* Perform checks and issue feedback to the user for all checks */
-	bool resTakeoff = checkFixedWingTakeoff(mission, home_alt, home_alt_valid);
+	bool resTakeoff = checkTakeoff(mission, home_alt);
 	bool resLanding = checkFixedWingLanding(mission, land_start_req);
+
+	/* Mission is only marked as feasible if all checks return true */
+	return (resTakeoff && resLanding);
+}
+
+bool
+MissionFeasibilityChecker::checkVTOL(const mission_s &mission, float home_alt, bool land_start_req)
+{
+	/* Perform checks and issue feedback to the user for all checks */
+	bool resTakeoff = checkTakeoff(mission, home_alt);
+	bool resLanding = checkVTOLLanding(mission, land_start_req);
 
 	/* Mission is only marked as feasible if all checks return true */
 	return (resTakeoff && resLanding);
@@ -168,7 +161,7 @@ MissionFeasibilityChecker::checkGeofence(const mission_s &mission, float home_al
 
 			if (MissionBlock::item_contains_position(missionitem) && !_navigator->get_geofence().check(missionitem)) {
 
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Geofence violation for waypoint %d", i + 1);
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Geofence violation for waypoint %zu", i + 1);
 				return false;
 			}
 		}
@@ -198,11 +191,11 @@ MissionFeasibilityChecker::checkHomePositionAltitude(const mission_s &mission, f
 			_navigator->get_mission_result()->warning = true;
 
 			if (throw_error) {
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: No home pos, WP %d uses rel alt", i + 1);
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: No home pos, WP %zu uses rel alt", i + 1);
 				return false;
 
 			} else	{
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Warning: No home pos, WP %d uses rel alt", i + 1);
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Warning: No home pos, WP %zu uses rel alt", i + 1);
 				return true;
 			}
 		}
@@ -215,11 +208,11 @@ MissionFeasibilityChecker::checkHomePositionAltitude(const mission_s &mission, f
 			_navigator->get_mission_result()->warning = true;
 
 			if (throw_error) {
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: Waypoint %d below home", i + 1);
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: Waypoint %zu below home", i + 1);
 				return false;
 
 			} else	{
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Warning: Waypoint %d below home", i + 1);
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Warning: Waypoint %zu below home", i + 1);
 				return true;
 			}
 		}
@@ -254,6 +247,7 @@ MissionFeasibilityChecker::checkMissionItemValidity(const mission_s &mission)
 		    missionitem.nav_cmd != NAV_CMD_VTOL_TAKEOFF &&
 		    missionitem.nav_cmd != NAV_CMD_VTOL_LAND &&
 		    missionitem.nav_cmd != NAV_CMD_DELAY &&
+		    missionitem.nav_cmd != NAV_CMD_CONDITION_GATE &&
 		    missionitem.nav_cmd != NAV_CMD_DO_JUMP &&
 		    missionitem.nav_cmd != NAV_CMD_DO_CHANGE_SPEED &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_HOME &&
@@ -265,15 +259,21 @@ MissionFeasibilityChecker::checkMissionItemValidity(const mission_s &mission)
 		    missionitem.nav_cmd != NAV_CMD_IMAGE_STOP_CAPTURE &&
 		    missionitem.nav_cmd != NAV_CMD_VIDEO_START_CAPTURE &&
 		    missionitem.nav_cmd != NAV_CMD_VIDEO_STOP_CAPTURE &&
+		    missionitem.nav_cmd != NAV_CMD_DO_CONTROL_VIDEO &&
 		    missionitem.nav_cmd != NAV_CMD_DO_MOUNT_CONFIGURE &&
 		    missionitem.nav_cmd != NAV_CMD_DO_MOUNT_CONTROL &&
+		    missionitem.nav_cmd != NAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW &&
+		    missionitem.nav_cmd != NAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_ROI &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_ROI_LOCATION &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_ROI_WPNEXT_OFFSET &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_ROI_NONE &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_CAM_TRIGG_DIST &&
+		    missionitem.nav_cmd != NAV_CMD_OBLIQUE_SURVEY &&
 		    missionitem.nav_cmd != NAV_CMD_DO_SET_CAM_TRIGG_INTERVAL &&
 		    missionitem.nav_cmd != NAV_CMD_SET_CAMERA_MODE &&
+		    missionitem.nav_cmd != NAV_CMD_SET_CAMERA_ZOOM &&
+		    missionitem.nav_cmd != NAV_CMD_SET_CAMERA_FOCUS &&
 		    missionitem.nav_cmd != NAV_CMD_DO_VTOL_TRANSITION) {
 
 			mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: item %i: unsupported cmd: %d", (int)(i + 1),
@@ -285,7 +285,7 @@ MissionFeasibilityChecker::checkMissionItemValidity(const mission_s &mission)
 		if (missionitem.nav_cmd == NAV_CMD_DO_SET_SERVO) {
 
 			/* check actuator number */
-			if (missionitem.params[0] < 0 || missionitem.params[0] > 5) {
+			if (missionitem.params[0] < 0 || missionitem.params[0] > 15) {
 				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Actuator number %d is out of bounds 0..5",
 						     (int)missionitem.params[0]);
 				return false;
@@ -311,8 +311,12 @@ MissionFeasibilityChecker::checkMissionItemValidity(const mission_s &mission)
 }
 
 bool
-MissionFeasibilityChecker::checkFixedWingTakeoff(const mission_s &mission, float home_alt, bool home_alt_valid)
+MissionFeasibilityChecker::checkTakeoff(const mission_s &mission, float home_alt)
 {
+	bool has_takeoff = false;
+	bool takeoff_first = false;
+	int takeoff_index = -1;
+
 	for (size_t i = 0; i < mission.count; i++) {
 		struct mission_item_s missionitem = {};
 		const ssize_t len = sizeof(struct mission_item_s);
@@ -342,6 +346,82 @@ MissionFeasibilityChecker::checkFixedWingTakeoff(const mission_s &mission, float
 				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: Takeoff altitude too low!");
 				return false;
 			}
+
+			// tell that mission has a takeoff waypoint
+			has_takeoff = true;
+
+			// tell that a takeoff waypoint is the first "waypoint"
+			// mission item
+			if (i == 0) {
+				takeoff_first = true;
+
+			} else if (takeoff_index == -1) {
+				// stores the index of the first takeoff waypoint
+				takeoff_index = i;
+			}
+		}
+	}
+
+	if (takeoff_index != -1) {
+		// checks if all the mission items before the first takeoff waypoint
+		// are not waypoints or position-related items;
+		// this means that, before a takeoff waypoint, one can set
+		// one of the bellow mission items
+		for (size_t i = 0; i < (size_t)takeoff_index; i++) {
+			struct mission_item_s missionitem = {};
+			const ssize_t len = sizeof(struct mission_item_s);
+
+			if (dm_read((dm_item_t)mission.dataman_id, i, &missionitem, len) != len) {
+				/* not supposed to happen unless the datamanager can't access the SD card, etc. */
+				return false;
+			}
+
+			takeoff_first = !(missionitem.nav_cmd != NAV_CMD_IDLE &&
+					  missionitem.nav_cmd != NAV_CMD_DELAY &&
+					  missionitem.nav_cmd != NAV_CMD_DO_JUMP &&
+					  missionitem.nav_cmd != NAV_CMD_DO_CHANGE_SPEED &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_HOME &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_SERVO &&
+					  missionitem.nav_cmd != NAV_CMD_DO_LAND_START &&
+					  missionitem.nav_cmd != NAV_CMD_DO_TRIGGER_CONTROL &&
+					  missionitem.nav_cmd != NAV_CMD_DO_DIGICAM_CONTROL &&
+					  missionitem.nav_cmd != NAV_CMD_IMAGE_START_CAPTURE &&
+					  missionitem.nav_cmd != NAV_CMD_IMAGE_STOP_CAPTURE &&
+					  missionitem.nav_cmd != NAV_CMD_VIDEO_START_CAPTURE &&
+					  missionitem.nav_cmd != NAV_CMD_VIDEO_STOP_CAPTURE &&
+					  missionitem.nav_cmd != NAV_CMD_DO_CONTROL_VIDEO &&
+					  missionitem.nav_cmd != NAV_CMD_DO_MOUNT_CONFIGURE &&
+					  missionitem.nav_cmd != NAV_CMD_DO_MOUNT_CONTROL &&
+					  missionitem.nav_cmd != NAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW &&
+					  missionitem.nav_cmd != NAV_CMD_DO_GIMBAL_MANAGER_CONFIGURE &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_ROI &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_ROI_LOCATION &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_ROI_WPNEXT_OFFSET &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_ROI_NONE &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_CAM_TRIGG_DIST &&
+					  missionitem.nav_cmd != NAV_CMD_OBLIQUE_SURVEY &&
+					  missionitem.nav_cmd != NAV_CMD_DO_SET_CAM_TRIGG_INTERVAL &&
+					  missionitem.nav_cmd != NAV_CMD_SET_CAMERA_MODE &&
+					  missionitem.nav_cmd != NAV_CMD_SET_CAMERA_ZOOM &&
+					  missionitem.nav_cmd != NAV_CMD_SET_CAMERA_FOCUS &&
+					  missionitem.nav_cmd != NAV_CMD_DO_VTOL_TRANSITION);
+		}
+	}
+
+	if (_navigator->get_takeoff_required() && _navigator->get_land_detected()->landed) {
+		// check for a takeoff waypoint, after the above conditions have been met
+		// MIS_TAKEOFF_REQ param has to be set and the vehicle has to be landed - one can load a mission
+		// while the vehicle is flying and it does not require a takeoff waypoint
+		if (!has_takeoff) {
+			mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: takeoff waypoint required.");
+			return false;
+
+		} else if (!takeoff_first) {
+			// check if the takeoff waypoint is the first waypoint item on the mission
+			// i.e, an item with position/attitude change modification
+			// if it is not, the mission should be rejected
+			mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: takeoff not first waypoint item");
+			return false;
 		}
 	}
 
@@ -395,24 +475,26 @@ MissionFeasibilityChecker::checkFixedWingLanding(const mission_s &mission, bool 
 
 				if (MissionBlock::item_contains_position(missionitem_previous)) {
 
-					const bool fw_status_valid = (_navigator->get_fw_pos_ctrl_status()->timestamp > 0);
+					uORB::SubscriptionData<position_controller_landing_status_s> landing_status{ORB_ID(position_controller_landing_status)};
+
+					const bool landing_status_valid = (landing_status.get().timestamp > 0);
 					const float wp_distance = get_distance_to_next_waypoint(missionitem_previous.lat, missionitem_previous.lon,
 								  missionitem.lat, missionitem.lon);
 
-					if (fw_status_valid && (wp_distance > _navigator->get_fw_pos_ctrl_status()->landing_flare_length)) {
+					if (landing_status_valid && (wp_distance > landing_status.get().flare_length)) {
 						/* Last wp is before flare region */
 
 						const float delta_altitude = missionitem.altitude - missionitem_previous.altitude;
 
 						if (delta_altitude < 0) {
 
-							const float horizontal_slope_displacement = _navigator->get_fw_pos_ctrl_status()->landing_horizontal_slope_displacement;
-							const float slope_angle_rad = _navigator->get_fw_pos_ctrl_status()->landing_slope_angle_rad;
+							const float horizontal_slope_displacement = landing_status.get().horizontal_slope_displacement;
+							const float slope_angle_rad = landing_status.get().slope_angle_rad;
 							const float slope_alt_req = Landingslope::getLandingSlopeAbsoluteAltitude(wp_distance, missionitem.altitude,
 										    horizontal_slope_displacement, slope_angle_rad);
 
-							if (missionitem_previous.altitude > slope_alt_req) {
-								/* Landing waypoint is above altitude of slope at the given waypoint distance */
+							if (missionitem_previous.altitude > slope_alt_req + 1.0f) {
+								/* Landing waypoint is above altitude of slope at the given waypoint distance (with small tolerance for floating point discrepancies) */
 								mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: adjust landing approach.");
 
 								const float wp_distance_req = Landingslope::getLandingSlopeWPDistance(missionitem_previous.altitude,
@@ -449,15 +531,93 @@ MissionFeasibilityChecker::checkFixedWingLanding(const mission_s &mission, bool 
 				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: starts with land waypoint.");
 				return false;
 			}
+
+		} else if (missionitem.nav_cmd == NAV_CMD_RETURN_TO_LAUNCH) {
+			if (land_start_found && do_land_start_index < i) {
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(),
+						     "Mission rejected: land start item before RTL item not possible.");
+				return false;
+			}
 		}
 	}
 
 	if (land_start_req && !land_start_found) {
-		mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: land start required.");
+		mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: landing pattern required.");
 		return false;
 	}
 
 	if (land_start_found && (!landing_valid || (do_land_start_index > landing_approach_index))) {
+		mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: invalid land start.");
+		return false;
+	}
+
+	/* No landing waypoints or no waypoints */
+	return true;
+}
+
+bool
+MissionFeasibilityChecker::checkVTOLLanding(const mission_s &mission, bool land_start_req)
+{
+	/* Go through all mission items and search for a landing waypoint
+	 * if landing waypoint is found: the previous waypoint is checked to be at a feasible distance and altitude given the landing slope */
+
+	bool land_start_found = false;
+	size_t do_land_start_index = 0;
+	size_t landing_approach_index = 0;
+
+	for (size_t i = 0; i < mission.count; i++) {
+		struct mission_item_s missionitem;
+		const ssize_t len = sizeof(missionitem);
+
+		if (dm_read((dm_item_t)mission.dataman_id, i, &missionitem, len) != len) {
+			/* not supposed to happen unless the datamanager can't access the SD card, etc. */
+			return false;
+		}
+
+		// if DO_LAND_START found then require valid landing AFTER
+		if (missionitem.nav_cmd == NAV_CMD_DO_LAND_START) {
+			if (land_start_found) {
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: more than one land start.");
+				return false;
+
+			} else {
+				land_start_found = true;
+				do_land_start_index = i;
+			}
+		}
+
+		if (missionitem.nav_cmd == NAV_CMD_LAND || missionitem.nav_cmd == NAV_CMD_VTOL_LAND) {
+			mission_item_s missionitem_previous {};
+
+			if (i > 0) {
+				landing_approach_index = i - 1;
+
+				if (dm_read((dm_item_t)mission.dataman_id, landing_approach_index, &missionitem_previous, len) != len) {
+					/* not supposed to happen unless the datamanager can't access the SD card, etc. */
+					return false;
+				}
+
+
+			} else {
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: starts with land waypoint.");
+				return false;
+			}
+
+		} else if (missionitem.nav_cmd == NAV_CMD_RETURN_TO_LAUNCH) {
+			if (land_start_found && do_land_start_index < i) {
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(),
+						     "Mission rejected: land start item before RTL item not possible.");
+				return false;
+			}
+		}
+	}
+
+	if (land_start_req && !land_start_found) {
+		mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: landing pattern required.");
+		return false;
+	}
+
+	if (land_start_found && (do_land_start_index > landing_approach_index)) {
 		mavlink_log_critical(_navigator->get_mavlink_log_pub(), "Mission rejected: invalid land start.");
 		return false;
 	}
@@ -497,20 +657,12 @@ MissionFeasibilityChecker::checkDistanceToFirstWaypoint(const mission_s &mission
 
 		if (dist_to_1wp < max_distance) {
 
-			if (dist_to_1wp > ((max_distance * 2) / 3)) {
-				/* allow at 2/3 distance, but warn */
-				mavlink_log_critical(_navigator->get_mavlink_log_pub(),
-						     "First waypoint far away: %d meters.", (int)dist_to_1wp);
-
-				_navigator->get_mission_result()->warning = true;
-			}
-
 			return true;
 
 		} else {
 			/* item is too far from home */
 			mavlink_log_critical(_navigator->get_mavlink_log_pub(),
-					     "First waypoint too far away: %d meters, %d max.",
+					     "First waypoint too far away: %dm, %d max",
 					     (int)dist_to_1wp, (int)max_distance);
 
 			_navigator->get_mission_result()->warning = true;
@@ -530,8 +682,9 @@ MissionFeasibilityChecker::checkDistancesBetweenWaypoints(const mission_s &missi
 		return true;
 	}
 
-	double last_lat = NAN;
-	double last_lon = NAN;
+	double last_lat = (double)NAN;
+	double last_lon = (double)NAN;
+	int last_cmd = 0;
 
 	/* Go through all waypoints */
 	for (size_t i = 0; i < mission.count; i++) {
@@ -557,21 +710,29 @@ MissionFeasibilityChecker::checkDistancesBetweenWaypoints(const mission_s &missi
 					mission_item.lat, mission_item.lon,
 					last_lat, last_lon);
 
-			if (dist_between_waypoints < max_distance) {
 
-				if (dist_between_waypoints > ((max_distance * 2) / 3)) {
-					/* allow at 2/3 distance, but warn */
-					mavlink_log_critical(_navigator->get_mavlink_log_pub(),
-							     "Distance between waypoints very far: %d meters.", (int)dist_between_waypoints);
-
-					_navigator->get_mission_result()->warning = true;
-				}
-
-			} else {
-				/* item is too far from home */
+			if (dist_between_waypoints > max_distance) {
+				/* distance between waypoints is too high */
 				mavlink_log_critical(_navigator->get_mavlink_log_pub(),
 						     "Distance between waypoints too far: %d meters, %d max.",
 						     (int)dist_between_waypoints, (int)max_distance);
+
+				_navigator->get_mission_result()->warning = true;
+				return false;
+
+				/* do not allow waypoints that are literally on top of each other */
+
+				/* and do not allow condition gates that are at the same position as a navigation waypoint */
+
+			} else if (dist_between_waypoints < 0.05f &&
+				   (mission_item.nav_cmd == NAV_CMD_CONDITION_GATE || last_cmd == NAV_CMD_CONDITION_GATE)) {
+
+				/* Waypoints and gate are at the exact same position, which indicates an
+				 * invalid mission and makes calculating the direction from one waypoint
+				 * to another impossible. */
+				mavlink_log_critical(_navigator->get_mavlink_log_pub(),
+						     "Distance between waypoint and gate too close: %d meters",
+						     (int)dist_between_waypoints);
 
 				_navigator->get_mission_result()->warning = true;
 				return false;
@@ -580,6 +741,7 @@ MissionFeasibilityChecker::checkDistancesBetweenWaypoints(const mission_s &missi
 
 		last_lat = mission_item.lat;
 		last_lon = mission_item.lon;
+		last_cmd = mission_item.nav_cmd;
 	}
 
 	/* We ran through all waypoints and have not found any distances between waypoints that are too far. */

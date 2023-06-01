@@ -33,7 +33,7 @@
 
 #include "IridiumSBD.h"
 
-#include <px4_tasks.h>
+#include <px4_platform_common/tasks.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -45,20 +45,19 @@
 #include <pthread.h>
 
 #include <systemlib/err.h>
-#include <systemlib/systemlib.h>
 #include <parameters/param.h>
-
-#include "drivers/drv_iridiumsbd.h"
 
 static constexpr const char *satcom_state_string[4] = {"STANDBY", "SIGNAL CHECK", "SBD SESSION", "TEST"};
 
 #define VERBOSE_INFO(...) if (_verbose) { PX4_INFO(__VA_ARGS__); }
 
+#define IRIDIUMSBD_DEVICE_PATH	"/dev/iridium"
+
 IridiumSBD *IridiumSBD::instance;
 int IridiumSBD::task_handle;
 
 IridiumSBD::IridiumSBD()
-	: CDev("iridiumsbd", IRIDIUMSBD_DEVICE_PATH)
+	: CDev(IRIDIUMSBD_DEVICE_PATH)
 {
 }
 
@@ -78,9 +77,31 @@ int IridiumSBD::start(int argc, char *argv[])
 	IridiumSBD::instance = new IridiumSBD();
 
 	IridiumSBD::task_handle = px4_task_spawn_cmd("iridiumsbd", SCHED_DEFAULT,
-				  SCHED_PRIORITY_SLOW_DRIVER, 1300, (main_t)&IridiumSBD::main_loop_helper, argv);
+				  SCHED_PRIORITY_SLOW_DRIVER, 1350, (main_t)&IridiumSBD::main_loop_helper, argv);
 
-	return OK;
+	int counter = 0;
+	IridiumSBD::instance->_start_completed = false;
+	IridiumSBD::instance->_task_should_exit = false;
+
+	// give the driver 6 seconds to start up
+	while (!IridiumSBD::instance->_start_completed && (IridiumSBD::task_handle != -1) && counter < 60) {
+		counter++;
+		usleep(100000);
+	}
+
+	if (IridiumSBD::instance->_start_completed && (IridiumSBD::task_handle != -1)) {
+		return PX4_OK;
+
+	} else {
+		// the driver failed to start so make sure it is shut down before exiting
+		IridiumSBD::instance->_task_should_exit = true;
+
+		for (int i = 0; (i < 10 + 1) && (IridiumSBD::task_handle != -1); i++) {
+			sleep(1);
+		}
+
+		return PX4_ERROR;
+	}
 }
 
 int IridiumSBD::stop()
@@ -192,7 +213,7 @@ int IridiumSBD::ioctl(struct file *filp, int cmd, unsigned long arg)
 // private functions                                                 //
 ///////////////////////////////////////////////////////////////////////
 
-void IridiumSBD::main_loop_helper(int argc, char *argv[])
+int IridiumSBD::main_loop_helper(int argc, char *argv[])
 {
 	// start the main loop and stay in it
 	IridiumSBD::instance->main_loop(argc, argv);
@@ -204,6 +225,7 @@ void IridiumSBD::main_loop_helper(int argc, char *argv[])
 	IridiumSBD::instance = nullptr;
 
 	PX4_WARN("stopped");
+	return 0;
 }
 
 void IridiumSBD::main_loop(int argc, char *argv[])
@@ -230,31 +252,65 @@ void IridiumSBD::main_loop(int argc, char *argv[])
 	}
 
 	if (arg_uart_name == 0) {
-		PX4_WARN("no Iridium SBD modem UART port provided!");
+		PX4_ERR("no Iridium SBD modem UART port provided!");
 		_task_should_exit = true;
 		return;
 	}
 
-	if (open_uart(argv[arg_uart_name]) != SATCOM_UART_OK) {
-		PX4_WARN("failed to open UART port!");
+
+	bool command_executed = false;
+
+	for (int counter = 0; (counter < 20) && !command_executed; counter++) {
+		if (open_uart(argv[arg_uart_name]) == SATCOM_UART_OK) {
+			command_executed = true;
+
+		} else {
+			usleep(100000);
+		}
+	}
+
+	if (!command_executed) {
+		PX4_ERR("failed to open UART port!");
 		_task_should_exit = true;
 		return;
 	}
 
 	// disable flow control
-	write_at("AT&K0");
+	command_executed = false;
 
-	if (read_at_command() != SATCOM_RESULT_OK) {
-		PX4_WARN("modem not responding");
+	for (int counter = 0; (counter < 20) && !command_executed; counter++) {
+		write_at("AT&K0");
+
+		if (read_at_command() != SATCOM_RESULT_OK) {
+			usleep(100000);
+
+		} else {
+			command_executed = true;
+		}
+	}
+
+	if (!command_executed) {
+		PX4_ERR("modem not responding");
 		_task_should_exit = true;
 		return;
 	}
 
 	// disable command echo
-	write_at("ATE0");
+	command_executed = false;
 
-	if (read_at_command() != SATCOM_RESULT_OK) {
-		PX4_WARN("modem not responding");
+	for (int counter = 0; (counter < 10) && !command_executed; counter++) {
+		write_at("ATE0");
+
+		if (read_at_command() != SATCOM_RESULT_OK) {
+			usleep(100000);
+
+		} else {
+			command_executed = true;
+		}
+	}
+
+	if (!command_executed) {
+		PX4_ERR("modem not responding");
 		_task_should_exit = true;
 		return;
 	}
@@ -281,6 +337,8 @@ void IridiumSBD::main_loop(int argc, char *argv[])
 	VERBOSE_INFO("read interval: %d s", _param_read_interval_s);
 	VERBOSE_INFO("SBD session timeout: %d s", _param_session_timeout_s);
 	VERBOSE_INFO("SBD stack time: %d ms", _param_stacking_time_ms);
+
+	_start_completed = true;
 
 	while (!_task_should_exit) {
 		switch (_state) {
@@ -473,12 +531,18 @@ void IridiumSBD::sbdsession_loop(void)
 		VERBOSE_INFO("SBD SESSION: SUCCESS (%d)", mo_status);
 
 		_ring_pending = false;
-		_rx_session_pending = false;
 		_tx_session_pending = false;
 		_last_read_time = hrt_absolute_time();
 		_last_heartbeat = _last_read_time;
 		++_successful_sbd_sessions;
 
+		if (mt_queued > 0) {
+			_rx_session_pending = true;
+
+		} else {
+			_rx_session_pending = false;
+
+		}
 
 		if (mt_len > 0) {
 			_rx_read_pending = true;
@@ -1046,23 +1110,17 @@ void IridiumSBD::publish_iridium_status()
 
 	// publish the status if it changed
 	if (need_to_publish) {
-		if (_iridiumsbd_status_pub == nullptr) {
-			_iridiumsbd_status_pub = orb_advertise(ORB_ID(iridiumsbd_status), &_status);
-
-		} else {
-			orb_publish(ORB_ID(iridiumsbd_status), _iridiumsbd_status_pub, &_status);
-		}
+		_iridiumsbd_status_pub.publish(_status);
 	}
-
 }
 
-int	IridiumSBD::open_first(struct file *filep)
+int IridiumSBD::open_first(struct file *filep)
 {
 	_cdev_used = true;
 	return CDev::open_first(filep);
 }
 
-int	IridiumSBD::close_last(struct file *filep)
+int IridiumSBD::close_last(struct file *filep)
 {
 	_cdev_used = false;
 	return CDev::close_last(filep);
@@ -1070,6 +1128,10 @@ int	IridiumSBD::close_last(struct file *filep)
 
 int iridiumsbd_main(int argc, char *argv[])
 {
+	if (argc < 2) {
+		goto out_error;
+	}
+
 	if (!strcmp(argv[1], "start")) {
 		return IridiumSBD::start(argc, argv);
 
@@ -1085,6 +1147,7 @@ int iridiumsbd_main(int argc, char *argv[])
 		return OK;
 	}
 
+out_error:
 	PX4_INFO("usage: iridiumsbd {start|stop|status|test} [-d uart_device]");
 
 	return PX4_ERROR;

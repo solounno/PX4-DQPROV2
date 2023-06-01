@@ -33,29 +33,35 @@
 ############################################################################
 
 #
-# PX4 paramers processor (main executable file)
+# PX4 paramaters processor (main executable file)
 #
 # This tool scans the PX4 source code for declarations of tunable parameters
 # and outputs the list in various formats.
 #
 # Currently supported formats are:
 #   * XML for the parametric UI generator
-#   * Human-readable description in DokuWiki page format
 #   * Human-readable description in Markdown page format for the PX4 dev guide
-#
-# This tool also allows to automatically upload the human-readable version
-# to the DokuWiki installation via XML-RPC.
 #
 
 from __future__ import print_function
 import sys
 import os
 import argparse
-from px4params import srcscanner, srcparser, xmlout, dokuwikiout, dokuwikirpc, markdownout
+from px4params import srcscanner, srcparser, injectxmlparams, xmlout, markdownout, jsonout
 
+import lzma #to create .xz file
 import re
 import json
 import codecs
+
+def save_compressed(filename):
+    #create lzma compressed version
+    xz_filename=filename+'.xz'
+    with lzma.open(xz_filename, 'wt', preset=9) as f:
+        with open(filename, 'r') as content_file:
+            f.write(content_file.read())
+
+
 
 def main():
     # Parse command line arguments
@@ -73,10 +79,10 @@ def main():
                              " (default FILENAME: parameters.xml)")
     parser.add_argument("-i", "--inject-xml",
                         nargs='?',
-                        const="../Tools/parameters_injected.xml",
+                        const="parameters_injected.xml",
                         metavar="FILENAME",
                         help="Inject additional param XML file"
-                             " (default FILENAME: ../Tools/parameters_injected.xml)")
+                             " (default FILENAME: parameters_injected.xml)")
     parser.add_argument("-b", "--board",
                         nargs='?',
                         const="",
@@ -88,40 +94,18 @@ def main():
                         metavar="FILENAME",
                         help="Create Markdown file"
                              " (default FILENAME: parameters.md)")
-    parser.add_argument("-w", "--wiki",
+    parser.add_argument("-j", "--json",
                         nargs='?',
-                        const="parameters.wiki",
+                        const="parameters.json",
                         metavar="FILENAME",
-                        help="Create DokuWiki file"
-                             " (default FILENAME: parameters.wiki)")
-    parser.add_argument("-u", "--wiki-update",
-                        nargs='?',
-                        const="firmware:parameters",
-                        metavar="PAGENAME",
-                        help="Update DokuWiki page"
-                             " (default PAGENAME: firmware:parameters)")
-    parser.add_argument("--wiki-url",
-                        default="https://pixhawk.org",
-                        metavar="URL",
-                        help="DokuWiki URL"
-                             " (default: https://pixhawk.org)")
-    parser.add_argument("--wiki-user",
-                        default=os.environ.get('XMLRPCUSER', None),
-                        metavar="USERNAME",
-                        help="DokuWiki XML-RPC user name"
-                             " (default: $XMLRPCUSER environment variable)")
-    parser.add_argument("--wiki-pass",
-                        default=os.environ.get('XMLRPCPASS', None),
-                        metavar="PASSWORD",
-                        help="DokuWiki XML-RPC user password"
-                             " (default: $XMLRPCUSER environment variable)")
-    parser.add_argument("--wiki-summary",
-                        metavar="SUMMARY",
-                        default="Automagically updated parameter documentation from code.",
-                        help="DokuWiki page edit summary")
+                        help="Create Json file"
+                             " (default FILENAME: parameters.json)")
     parser.add_argument('-v', '--verbose',
                         action='store_true',
                         help="verbose output")
+    parser.add_argument('-c', '--compress',
+                        action='store_true',
+                        help="compress parameter file")
     parser.add_argument("-o", "--overrides",
                         default="{}",
                         metavar="OVERRIDES",
@@ -130,7 +114,7 @@ def main():
     args = parser.parse_args()
 
     # Check for valid command
-    if not (args.xml or args.wiki or args.wiki_update or args.markdown):
+    if not (args.xml or args.markdown or args.json):
         print("Error: You need to specify at least one output method!\n")
         parser.print_usage()
         sys.exit(1)
@@ -153,6 +137,12 @@ def main():
     if len(param_groups) == 0:
         print("Warning: no parameters found")
 
+
+    #inject parameters at front of set
+    cur_dir = os.path.dirname(os.path.realpath(__file__))
+    groups_to_inject = injectxmlparams.XMLInject(os.path.join(cur_dir, args.inject_xml)).injected()
+    param_groups=groups_to_inject+param_groups
+
     override_dict = json.loads(args.overrides)
     if len(override_dict.keys()) > 0:
         for group in param_groups:
@@ -163,38 +153,40 @@ def main():
                     param.default = val
                     print("OVERRIDING {:s} to {:s}!!!!!".format(name, val))
 
+    output_files = []
+
     # Output to XML file
     if args.xml:
         if args.verbose:
             print("Creating XML file " + args.xml)
-        cur_dir = os.path.dirname(os.path.realpath(__file__))
-        out = xmlout.XMLOutput(param_groups, args.board,
-                               os.path.join(cur_dir, args.inject_xml))
+        out = xmlout.XMLOutput(param_groups, args.board)
         out.Save(args.xml)
-
-    # Output to DokuWiki tables
-    if args.wiki or args.wiki_update:
-        out = dokuwikiout.DokuWikiTablesOutput(param_groups)
-        if args.wiki:
-            print("Creating wiki file " + args.wiki)
-            out.Save(args.wiki)
-        if args.wiki_update:
-            if args.wiki_user and args.wiki_pass:
-                print("Updating wiki page " + args.wiki_update)
-                xmlrpc = dokuwikirpc.get_xmlrpc(args.wiki_url, args.wiki_user, args.wiki_pass)
-                xmlrpc.wiki.putPage(args.wiki_update, out.output, {'sum': args.wiki_summary})
-            else:
-                print("Error: You need to specify DokuWiki XML-RPC username and password!")
+        output_files.append(args.xml)
 
     # Output to Markdown/HTML tables
     if args.markdown:
-        out = markdownout.MarkdownTablesOutput(param_groups)
-        if args.markdown:
+        if args.verbose:
             print("Creating markdown file " + args.markdown)
-            out.Save(args.markdown)
+        out = markdownout.MarkdownTablesOutput(param_groups)
+        out.Save(args.markdown)
+        output_files.append(args.markdown)
 
-    #print("All done!")
+    # Output to JSON file
+    if args.json:
+        if args.verbose:
+            print("Creating Json file " + args.json)
+        cur_dir = os.path.dirname(os.path.realpath(__file__))
+        out = jsonout.JsonOutput(param_groups, args.board,
+                               os.path.join(cur_dir, args.inject_xml))
+        out.Save(args.json)
+        output_files.append(args.json)
 
+    if args.compress:
+        for f in output_files:
+            if args.verbose:
+                print("Compressing file " + f)
+            save_compressed(f)
+            
 
 if __name__ == "__main__":
     main()

@@ -3,6 +3,7 @@
 #include <systemlib/err.h>
 
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <drivers/drv_hrt.h>
@@ -12,11 +13,13 @@
 #include <lib/rc/dsm.h>
 #include <lib/rc/st24.h>
 #include <lib/rc/sumd.h>
+#include <lib/rc/crsf.h>
+#include <lib/rc/ghst.hpp>
 
-#if !defined(CONFIG_ARCH_BOARD_SITL)
-#define TEST_DATA_PATH "/fs/microsd"
-#else
+#if defined(CONFIG_ARCH_BOARD_PX4_SITL)
 #define TEST_DATA_PATH "./test_data/"
+#else
+#define TEST_DATA_PATH "/fs/microsd"
 #endif
 
 extern "C" __EXPORT int rc_tests_main(int argc, char *argv[]);
@@ -24,12 +27,15 @@ extern "C" __EXPORT int rc_tests_main(int argc, char *argv[]);
 class RCTest : public UnitTest
 {
 public:
-	virtual bool run_tests();
+	bool run_tests() override;
 
 private:
+	bool crsfTest();
+	bool ghstTest();
 	bool dsmTest(const char *filepath, unsigned expected_chancount, unsigned expected_dropcount, unsigned chan0);
 	bool dsmTest10Ch();
-	bool dsmTest12Ch();
+	bool dsmTest16Ch();
+	bool dsmTest22msDSMX16Ch();
 	bool sbus2Test();
 	bool st24Test();
 	bool sumdTest();
@@ -37,8 +43,11 @@ private:
 
 bool RCTest::run_tests()
 {
+	ut_run_test(crsfTest);
+	ut_run_test(ghstTest);
 	ut_run_test(dsmTest10Ch);
-	ut_run_test(dsmTest12Ch);
+	ut_run_test(dsmTest16Ch);
+	ut_run_test(dsmTest22msDSMX16Ch);
 	ut_run_test(sbus2Test);
 	ut_run_test(st24Test);
 	ut_run_test(sumdTest);
@@ -46,19 +55,197 @@ bool RCTest::run_tests()
 	return (_tests_failed == 0);
 }
 
+bool RCTest::crsfTest()
+{
+	const char *filepath = TEST_DATA_PATH "crsf_rc_channels.txt";
+
+	FILE *fp = fopen(filepath, "rt");
+
+	ut_test(fp);
+	//PX4_INFO("loading data from: %s", filepath);
+
+	const int line_size = 500;
+	char line[line_size];
+	bool has_decoded_values = false;
+	const int max_channels = 16;
+	uint16_t rc_values[max_channels];
+	uint16_t num_values = 0;
+	int line_counter = 1;
+
+	while (fgets(line, line_size, fp) != nullptr)  {
+
+		if (strncmp(line, "INPUT ", 6) == 0) {
+
+			if (has_decoded_values) {
+				PX4_ERR("Parser decoded values that are not in the test file (line=%i)", line_counter);
+				return false;
+			}
+
+			// read the values
+			const char *file_buffer = line + 6;
+			int frame_len = 0;
+			uint8_t frame[300];
+			int offset;
+			int number;
+
+			while (sscanf(file_buffer, "%x, %n", &number, &offset) > 0) {
+				frame[frame_len++] = number;
+				file_buffer += offset;
+			}
+
+			// Pipe the data into the parser
+			hrt_abstime now = hrt_absolute_time();
+
+			bool result = crsf_parse(now, frame, frame_len, rc_values, &num_values, max_channels);
+
+			if (result) {
+				has_decoded_values = true;
+			}
+
+		} else if (strncmp(line, "DECODED ", 8) == 0) {
+
+			if (!has_decoded_values) {
+				PX4_ERR("Test file contains decoded values but the parser did not decode anything (line=%i)", line_counter);
+				return false;
+			}
+
+			// read the values
+			const char *file_buffer = line + 8;
+			int offset;
+			int expected_rc_value;
+			int expected_num_channels = 0;
+
+			while (sscanf(file_buffer, "%x, %n", &expected_rc_value, &offset) > 0) {
+
+				// allow a small difference
+				if (abs(expected_rc_value - (int)rc_values[expected_num_channels]) > 10) {
+					PX4_ERR("File line: %i, channel: %i", line_counter, expected_num_channels);
+					ut_compare("Wrong decoded channel", expected_rc_value, rc_values[expected_num_channels]);
+				}
+
+				file_buffer += offset;
+				++expected_num_channels;
+			}
+
+			if (expected_num_channels != num_values) {
+				PX4_ERR("File line: %d", line_counter);
+				ut_compare("Unexpected number of decoded channels", expected_num_channels, num_values);
+			}
+
+			has_decoded_values = false;
+		}
+
+		++line_counter;
+	}
+
+	return true;
+}
+
+bool RCTest::ghstTest()
+{
+	const char *filepath = TEST_DATA_PATH "ghst_rc_channels.txt";
+
+	FILE *fp = fopen(filepath, "rt");
+
+	ut_test(fp);
+
+	int uart_fd = -1;
+	const int line_size = 500;
+	char line[line_size];
+	bool has_decoded_values = false;
+	const int max_channels = 16;
+	uint16_t rc_values[max_channels];
+	uint16_t num_values = 0;
+	int line_counter = 1;
+	int8_t ghst_rssi = -1;
+	ghst_config(uart_fd);
+
+	while (fgets(line, line_size, fp) != nullptr)  {
+
+		if (strncmp(line, "INPUT ", 6) == 0) {
+
+			if (has_decoded_values) {
+				PX4_ERR("Parser decoded values that are not in the test file (line=%i)", line_counter);
+				return false;
+			}
+
+			// read the values
+			const char *file_buffer = line + 6;
+			int frame_len = 0;
+			uint8_t frame[300];
+			int offset;
+			int number;
+
+			while (sscanf(file_buffer, "%x, %n", &number, &offset) > 0) {
+				frame[frame_len++] = number;
+				file_buffer += offset;
+			}
+
+			// Pipe the data into the parser
+			hrt_abstime now = hrt_absolute_time();
+
+			bool result = ghst_parse(now, frame, frame_len, rc_values, &ghst_rssi, &num_values, max_channels);
+
+			if (result) {
+				has_decoded_values = true;
+			}
+
+		} else if (strncmp(line, "DECODED ", 8) == 0) {
+
+			if (!has_decoded_values) {
+				PX4_ERR("Test file contains decoded values but the parser did not decode anything (line=%i)", line_counter);
+				return false;
+			}
+
+			// read the values
+			const char *file_buffer = line + 8;
+			int offset;
+			int expected_rc_value;
+			int expected_num_channels = 0;
+
+			while (sscanf(file_buffer, "%x, %n", &expected_rc_value, &offset) > 0) {
+
+				// allow a small difference
+				if (abs(expected_rc_value - (int)rc_values[expected_num_channels]) > 10) {
+					PX4_ERR("File line: %i, channel: %i", line_counter, expected_num_channels);
+					ut_compare("Wrong decoded channel", expected_rc_value, rc_values[expected_num_channels]);
+				}
+
+				file_buffer += offset;
+				++expected_num_channels;
+			}
+
+			if (expected_num_channels != num_values) {
+				PX4_ERR("File line: %d", line_counter);
+				ut_compare("Unexpected number of decoded channels", expected_num_channels, num_values);
+			}
+
+			has_decoded_values = false;
+		}
+
+		++line_counter;
+	}
+
+	return true;
+}
+
 bool RCTest::dsmTest10Ch()
 {
 	return dsmTest(TEST_DATA_PATH "dsm_x_data.txt", 10, 6, 1500);
 }
 
-bool RCTest::dsmTest12Ch()
+bool RCTest::dsmTest16Ch()
 {
-	return dsmTest(TEST_DATA_PATH "dsm_x_dx9_data.txt", 12, 6, 1500);
+	return dsmTest(TEST_DATA_PATH "dsm_x_dx9_data.txt", 16, 3, 1500);
+}
+
+bool RCTest::dsmTest22msDSMX16Ch()
+{
+	return dsmTest(TEST_DATA_PATH "dsm_x_dx9_px4_binding_data.txt", 16, 6, 1499);
 }
 
 bool RCTest::dsmTest(const char *filepath, unsigned expected_chancount, unsigned expected_dropcount, unsigned chan0)
 {
-
 	FILE *fp;
 	fp = fopen(filepath, "rt");
 
@@ -83,7 +270,7 @@ bool RCTest::dsmTest(const char *filepath, unsigned expected_chancount, unsigned
 	unsigned dsm_frame_drops = 0;
 	uint16_t max_channels = sizeof(rc_values) / sizeof(rc_values[0]);
 
-	int rate_limiter = 0;
+	int count = 0;
 	unsigned last_drop = 0;
 
 	dsm_proto_init();
@@ -100,10 +287,12 @@ bool RCTest::dsmTest(const char *filepath, unsigned expected_chancount, unsigned
 
 		// Pipe the data into the parser
 		bool result = dsm_parse(f * 1e6f, &frame[0], len, rc_values, &num_values,
-					&dsm_11_bit, &dsm_frame_drops, max_channels);
+					&dsm_11_bit, &dsm_frame_drops, nullptr, max_channels);
 
 		if (result) {
-			ut_compare("num_values == expected_chancount", num_values, expected_chancount);
+			if (count > (16 * 10)) { // need to process enough data to have full channel count
+				ut_compare("num_values == expected_chancount", num_values, expected_chancount);
+			}
 
 			ut_test(abs((int)chan0 - (int)rc_values[0]) < 30);
 
@@ -115,18 +304,18 @@ bool RCTest::dsmTest(const char *filepath, unsigned expected_chancount, unsigned
 		}
 
 		if (last_drop != (dsm_frame_drops)) {
-			PX4_INFO("frame dropped, now #%d", (dsm_frame_drops));
+			//PX4_INFO("frame dropped, now #%d", (dsm_frame_drops));
 			last_drop = dsm_frame_drops;
 		}
 
-		rate_limiter++;
+		count++;
 	}
 
 	fclose(fp);
 
 	ut_test(ret == EOF);
-	PX4_INFO("drop: %d", (int)last_drop);
-	ut_test(last_drop == expected_dropcount);
+	//PX4_INFO("drop: %d", (int)last_drop);
+	ut_compare("last_drop == expected_dropcount", last_drop, expected_dropcount);
 
 	return true;
 }
@@ -139,19 +328,7 @@ bool RCTest::sbus2Test()
 	fp = fopen(filepath, "rt");
 
 	ut_test(fp);
-	//warnx("loading data from: %s", filepath);
-
-	// if (argc < 2)
-	// 	errx(1, "Need a filename for the input file");
-
-	//int byte_offset = 7;
-
-	// if (argc > 2) {
-	// 	char* end;
-	// 	byte_offset = strtol(argv[2],&end,10);
-	// }
-
-	//warnx("RUNNING TEST WITH BYTE OFFSET OF: %d", byte_offset);
+	//PX4_INFO("loading data from: %s", filepath);
 
 	float f;
 	unsigned x;
@@ -194,7 +371,7 @@ bool RCTest::sbus2Test()
 					 &sbus_failsafe, &sbus_frame_drop, &sbus_frame_drops, max_channels);
 
 		if (result) {
-			//warnx("decoded packet");
+			//PX4_INFO("decoded packet");
 		}
 
 		// }
@@ -216,7 +393,7 @@ bool RCTest::st24Test()
 {
 	const char *filepath = TEST_DATA_PATH "st24_data.txt";
 
-	//warnx("loading data from: %s", filepath);
+	//PX4_INFO("loading data from: %s", filepath);
 
 	FILE *fp;
 
@@ -243,7 +420,7 @@ bool RCTest::st24Test()
 		}
 
 		if (((f - last_time) * 1000 * 1000) > 3000) {
-			// warnx("FRAME RESET\n\n");
+			// PX4_INFO("FRAME RESET\n\n");
 		}
 
 		uint8_t b = static_cast<uint8_t>(x);
@@ -259,11 +436,11 @@ bool RCTest::st24Test()
 		uint16_t channels[20];
 
 		if (!st24_decode(b, &rssi, &rx_count, &channel_count, channels, sizeof(channels) / sizeof(channels[0]))) {
-			//warnx("decoded: %u channels (converted to PPM range)", (unsigned)channel_count);
+			//PX4_INFO("decoded: %u channels (converted to PPM range)", (unsigned)channel_count);
 
 			for (unsigned i = 0; i < channel_count; i++) {
 				//int16_t val = channels[i];
-				//warnx("channel %u: %d 0x%03X", i, static_cast<int>(val), static_cast<int>(val));
+				//PX4_INFO("channel %u: %d 0x%03X", i, static_cast<int>(val), static_cast<int>(val));
 			}
 		}
 	}
@@ -277,7 +454,7 @@ bool RCTest::sumdTest()
 {
 	const char *filepath = TEST_DATA_PATH "sumd_data.txt";
 
-	//warnx("loading data from: %s", filepath);
+	//PX4_INFO("loading data from: %s", filepath);
 
 	FILE *fp;
 
@@ -304,7 +481,7 @@ bool RCTest::sumdTest()
 		}
 
 		if (((f - last_time) * 1000 * 1000) > 3000) {
-			// warnx("FRAME RESET\n\n");
+			// PX4_INFO("FRAME RESET\n\n");
 		}
 
 		uint8_t b = static_cast<uint8_t>(x);

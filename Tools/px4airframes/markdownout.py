@@ -1,13 +1,15 @@
 from xml.sax.saxutils import escape
 import codecs
 import os
+import html
 
 class MarkdownTablesOutput():
     def __init__(self, groups, board, image_path):
         result = ("# Airframes Reference\n"
-                  "> **Note** **This list is auto-generated from the source code**.\n"
+                  "> **Note** **This list is [auto-generated](https://github.com/PX4/Firmware/edit/master/Tools/px4airframes/markdownout.py) from the source code**.\n"
                   "> \n"
-                  "> The **AUX** channels are only available on Pixhawk Boards (labeled with **AUX OUT**).\n"
+                  "> **AUX** channels may not be present on some flight controllers.\n"
+                  "> If present, PWM AUX channels are commonly labelled **AUX OUT**.\n"
                   "> \n"
                   "\n")
 
@@ -30,9 +32,8 @@ class MarkdownTablesOutput():
             # Display an image of the frame
             image_name = group.GetImageName()
             result += '<div>\n'
-            if image_name != 'AirframeUnknown':
-                image_name = image_path + image_name
-                result += '<img src="%s.svg" width="29%%" style="max-height: 180px;"/>\n' % (image_name)
+            image_name = image_path + image_name
+            result += '<img src="%s.svg" width="29%%" style="max-height: 180px;"/>\n' % (image_name)
 
             # check if all outputs are equal for the group: if so, show them
             # only once
@@ -89,7 +90,7 @@ class MarkdownTablesOutput():
                     maintainer = param.GetMaintainer()
                     maintainer_entry = ''
                     if maintainer != '':
-                        maintainer_entry = '<p>Maintainer: %s</p>' % (maintainer)
+                        maintainer_entry = '<p>Maintainer: %s</p>' % (html.escape(maintainer))
                     url = param.GetFieldValue('url')
                     name_anchor='id="%s_%s_%s"' % (group.GetClass(),group.GetName(),name)
                     name_anchor=name_anchor.replace(' ','_').lower()

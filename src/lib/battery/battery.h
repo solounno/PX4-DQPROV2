@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2016, 2017 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2019-2021 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -37,85 +37,177 @@
  * Library calls for battery functionality.
  *
  * @author Julian Oes <julian@oes.ch>
+ * @author Timothy Scott <timothy@auterion.com>
  */
 
 #pragma once
 
-#include <uORB/topics/battery_status.h>
+#include <math.h>
+#include <float.h>
+
+#include <board_config.h>
+#include <px4_platform_common/board_common.h>
+#include <px4_platform_common/module_params.h>
+#include <matrix/math.hpp>
+
 #include <drivers/drv_hrt.h>
-#include <px4_module_params.h>
+#include <lib/parameters/param.h>
+#include <lib/ecl/AlphaFilter/AlphaFilter.hpp>
+#include <uORB/PublicationMulti.hpp>
+#include <uORB/topics/battery_status.h>
 
-
+/**
+ * BatteryBase is a base class for any type of battery.
+ *
+ * You can use this class on its own. Or, if you need to implement a custom battery type,
+ * you can inherit from this class. See, for example, src/modules/battery_status/AnalogBattery.h
+ */
 class Battery : public ModuleParams
 {
 public:
-	Battery();
-
-	/**
-	 * Reset all battery stats and report invalid/nothing.
-	 */
-	void reset(battery_status_s *battery_status);
+	Battery(int index, ModuleParams *parent, const int sample_interval_us);
+	~Battery() = default;
 
 	/**
 	 * Get the battery cell count
 	 */
-	int cell_count() { return _n_cells.get(); }
+	int cell_count() { return _params.n_cells; }
 
 	/**
 	 * Get the empty voltage per cell
 	 */
-	float empty_cell_voltage() { return _v_empty.get(); }
+	float empty_cell_voltage() { return _params.v_empty; }
 
 	/**
 	 * Get the full voltage per cell
 	 */
-	float full_cell_voltage() { return _v_charged.get(); }
+	float full_cell_voltage() { return _params.v_charged; }
+
+	/**
+	 * The function that returns pointer to the battery status
+	 */
+
+	battery_status_s *getBatteryStatus() { return &_battery_status; }
 
 	/**
 	 * Update current battery status message.
 	 *
-	 * @param voltage_v: current voltage in V
-	 * @param current_a: current current in A
-	 * @param connected: Battery is connected
-	 * @param selected_source: This battery is on the brick that the selected source for selected_source
+	 * @param timestamp: Time at which the ADC was read (use hrt_absolute_time())
+	 * @param voltage_v: Battery voltage, in Volts
+	 * @param current_a: Battery current, in Amps
+	 * @param connected: Flag indicating battery connection
+	 * @param source: Source type in relation to BAT%d_SOURCE param.
 	 * @param priority: The brick number -1. The term priority refers to the Vn connection on the LTC4417
-	 * @param throttle_normalized: throttle from 0 to 1
+	 * @param throttle_normalized: Throttle of the vehicle, between 0 and 1
+	 * @param publish: The flag that can disable publishing battery status. It is true by default
 	 */
-	void updateBatteryStatus(hrt_abstime timestamp, float voltage_v, float current_a,
-				 bool connected, bool selected_source, int priority,
-				 float throttle_normalized,
-				 bool armed, battery_status_s *status);
+	void updateBatteryStatus(const hrt_abstime &timestamp, float voltage_v, float current_a, bool connected,
+				 int source, int priority, float throttle_normalized, bool publish = true);
+
+protected:
+	struct {
+		param_t v_empty;
+		param_t v_charged;
+		param_t n_cells;
+		param_t capacity;
+		param_t v_load_drop;
+		param_t r_internal;
+		param_t low_thr;
+		param_t crit_thr;
+		param_t emergen_thr;
+		param_t source;
+
+		// TODO: These parameters are depracated. They can be removed entirely once the
+		//  new version of Firmware has been around for long enough.
+		param_t v_empty_old;
+		param_t v_charged_old;
+		param_t n_cells_old;
+		param_t capacity_old;
+		param_t v_load_drop_old;
+		param_t r_internal_old;
+		param_t source_old;
+	} _param_handles{};
+
+	struct {
+		float v_empty;
+		float v_charged;
+		int32_t  n_cells;
+		float capacity;
+		float v_load_drop;
+		float r_internal;
+		float low_thr;
+		float crit_thr;
+		float emergen_thr;
+		int32_t source;
+
+		// TODO: These parameters are depracated. They can be removed entirely once the
+		//  new version of Firmware has been around for long enough.
+		float v_empty_old;
+		float v_charged_old;
+		int32_t  n_cells_old;
+		float capacity_old;
+		float v_load_drop_old;
+		float r_internal_old;
+		int32_t source_old;
+	} _params{};
+
+	const int _index;
+
+	bool _first_parameter_update{true};
+	void updateParams() override;
+
+	/**
+	 * This function helps migrating and syncing from/to deprecated parameters. BAT_* BAT1_*
+	 * @tparam T Type of the parameter (int or float)
+	 * @param old_param Handle to the old deprecated parameter (for example, param_find("BAT_N_CELLS"))
+	 * @param new_param Handle to the new replacement parameter (for example, param_find("BAT1_N_CELLS"))
+	 * @param old_val Pointer to the value of the old deprecated parameter
+	 * @param new_val Pointer to the value of the new replacement parameter
+	 * @param firstcall If true, this function prefers migrating old to new
+	 */
+	template<typename T>
+	void migrateParam(param_t old_param, param_t new_param, T *old_val, T *new_val, bool firstcall)
+	{
+		T previous_old_val = *old_val;
+		T previous_new_val = *new_val;
+
+		// Update both the old and new parameter values
+		param_get(old_param, old_val);
+		param_get(new_param, new_val);
+
+		// Check if the parameter values are different
+		if (!matrix::isEqualF((float)*old_val, (float)*new_val)) {
+			// If so, copy the new value over to the unchanged parameter
+			// Note: If they differ from the beginning we migrate old to new
+			if (firstcall || !matrix::isEqualF((float)*old_val, (float)previous_old_val)) {
+				param_set_no_notification(new_param, old_val);
+				param_get(new_param, new_val);
+
+			} else if (!matrix::isEqualF((float)*new_val, (float)previous_new_val)) {
+				param_set_no_notification(old_param, new_val);
+				param_get(old_param, old_val);
+			}
+		}
+	}
 
 private:
-	void filterVoltage(float voltage_v);
-	void filterThrottle(float throttle);
-	void filterCurrent(float current_a);
-	void sumDischarged(hrt_abstime timestamp, float current_a);
-	void estimateRemaining(float voltage_v, float current_a, float throttle, bool armed);
-	void determineWarning(bool connected);
+	void sumDischarged(const hrt_abstime &timestamp, float current_a);
+	void estimateStateOfCharge(const float voltage_v, const float current_a, const float throttle);
+	uint8_t determineWarning(float state_of_charge);
 	void computeScale();
 
-	DEFINE_PARAMETERS(
-		(ParamFloat<px4::params::BAT_V_EMPTY>) _v_empty,
-		(ParamFloat<px4::params::BAT_V_CHARGED>) _v_charged,
-		(ParamInt<px4::params::BAT_N_CELLS>) _n_cells,
-		(ParamFloat<px4::params::BAT_CAPACITY>) _capacity,
-		(ParamFloat<px4::params::BAT_V_LOAD_DROP>) _v_load_drop,
-		(ParamFloat<px4::params::BAT_R_INTERNAL>) _r_internal,
-		(ParamFloat<px4::params::BAT_LOW_THR>) _low_thr,
-		(ParamFloat<px4::params::BAT_CRIT_THR>) _crit_thr,
-		(ParamFloat<px4::params::BAT_EMERGEN_THR>) _emergency_thr
-	)
+	uORB::PublicationMulti<battery_status_s> _battery_status_pub{ORB_ID(battery_status)};
 
-	bool _battery_initialized = false;
-	float _voltage_filtered_v = -1.f;
-	float _throttle_filtered = -1.f;
-	float _current_filtered_a = -1.f;
-	float _discharged_mah = 0.f;
-	float _discharged_mah_loop = 0.f;
-	float _remaining_voltage = -1.f;		///< normalized battery charge level remaining based on voltage
-	float _remaining = -1.f;			///< normalized battery charge level, selected based on config param
-	float _scale = 1.f;
-	uint8_t _warning;
-	hrt_abstime _last_timestamp;
+	battery_status_s _battery_status{};
+	bool _battery_initialized{false};
+	AlphaFilter<float> _voltage_filter_v;
+	AlphaFilter<float> _current_filter_a;
+	AlphaFilter<float> _throttle_filter;
+	float _discharged_mah{0.f};
+	float _discharged_mah_loop{0.f};
+	float _state_of_charge_volt_based{-1.f};	// [0,1]
+	float _state_of_charge{-1.f};				// [0,1]
+	float _scale{1.f};
+	uint8_t _warning{battery_status_s::BATTERY_WARNING_NONE};
+	hrt_abstime _last_timestamp{0};
 };

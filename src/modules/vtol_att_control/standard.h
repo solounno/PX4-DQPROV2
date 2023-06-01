@@ -55,22 +55,20 @@ class Standard : public VtolType
 public:
 
 	Standard(VtolAttitudeControl *_att_controller);
-	~Standard();
+	~Standard() override = default;
 
-	virtual void update_vtol_state();
-	virtual void update_transition_state();
-	virtual void update_fw_state();
-	virtual void update_mc_state();
-	virtual void fill_actuator_outputs();
-	virtual void waiting_on_tecs();
+	void update_vtol_state() override;
+	void update_transition_state() override;
+	void update_fw_state() override;
+	void update_mc_state() override;
+	void fill_actuator_outputs() override;
+	void waiting_on_tecs() override;
 
 private:
 
 	struct {
 		float pusher_ramp_dt;
 		float back_trans_ramp;
-		float down_pitch_max;
-		float forward_thrust_scale;
 		float pitch_setpoint_offset;
 		float reverse_output;
 		float reverse_delay;
@@ -79,14 +77,12 @@ private:
 	struct {
 		param_t pusher_ramp_dt;
 		param_t back_trans_ramp;
-		param_t down_pitch_max;
-		param_t forward_thrust_scale;
 		param_t pitch_setpoint_offset;
 		param_t reverse_output;
 		param_t reverse_delay;
 	} _params_handles_standard;
 
-	enum vtol_mode {
+	enum class vtol_mode {
 		MC_MODE = 0,
 		TRANSITION_TO_FW,
 		TRANSITION_TO_MC,
@@ -98,10 +94,10 @@ private:
 		hrt_abstime transition_start;	// at what time did we start a transition (front- or backtransition)
 	} _vtol_schedule;
 
-	float _pusher_throttle;
-	float _reverse_output;
-	float _airspeed_trans_blend_margin;
+	float _pusher_throttle{0.0f};
+	float _reverse_output{0.0f};
+	float _airspeed_trans_blend_margin{0.0f};
 
-	virtual void parameters_update();
+	void parameters_update() override;
 };
 #endif

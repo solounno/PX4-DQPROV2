@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2017 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2017-2018 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -33,24 +33,26 @@
 
 /**
  * @file status_display.h
- * Status Display decouple the LED and tune form the original commander
+ * Status Display decouples LED and tunes from commander
  *
  * @author Simone Guscetti <simone@px4.io>
  */
 
 #pragma once
 
-#include "subscriber_handler.h"
-
 #include <drivers/drv_hrt.h>
 
-#include <uORB/uORB.h>
+#include <uORB/Publication.hpp>
+#include <uORB/Subscription.hpp>
 #include <uORB/topics/battery_status.h>
 #include <uORB/topics/cpuload.h>
 #include <uORB/topics/led_control.h>
+#include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/vehicle_status_flags.h>
 
+namespace events
+{
 namespace status
 {
 
@@ -58,7 +60,7 @@ class StatusDisplay
 {
 public:
 
-	StatusDisplay(const events::SubscriberHandler &subscriber_handler);
+	StatusDisplay();
 
 	/** regularily called to handle state updates */
 	void process();
@@ -66,7 +68,7 @@ public:
 protected:
 	/**
 	 * check for topic updates
-	 * @return true if one or more topic got updated
+	 * @return true if one or more topics got updated
 	 */
 	bool check_for_updates();
 
@@ -78,12 +80,12 @@ protected:
 	/** publish LED control */
 	void publish();
 
-	// TODO: review if there is a better variant that allocate this in the memory
-	struct battery_status_s _battery_status = {};
-	struct cpuload_s _cpu_load = {};
-	struct vehicle_status_s _vehicle_status = {};
-	struct vehicle_status_flags_s _vehicle_status_flags = {};
-	struct vehicle_attitude_s _vehicle_attitude = {};
+	// TODO: review if there is a better variant that allocates this in the memory
+	uORB::SubscriptionData<battery_status_s> _battery_status_sub{ORB_ID(battery_status)};
+	uORB::SubscriptionData<cpuload_s> _cpu_load_sub{ORB_ID(cpuload)};
+	uORB::SubscriptionData<vehicle_status_s> _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::SubscriptionData<vehicle_status_flags_s> _vehicle_status_flags_sub{ORB_ID(vehicle_status_flags)};
+	uORB::SubscriptionData<vehicle_attitude_s> _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 
 	struct led_control_s _led_control = {};
 
@@ -94,8 +96,10 @@ private:
 	bool _critical_battery = false;
 	int _old_nav_state = -1;
 	int _old_battery_status_warning = -1;
-	orb_advert_t _led_control_pub = nullptr;
-	const events::SubscriberHandler &_subscriber_handler;
+
+	uORB::Publication<led_control_s> _led_control_pub{ORB_ID(led_control)};
+
 };
 
-} /* status */
+} /* namespace status */
+} /* namespace events */

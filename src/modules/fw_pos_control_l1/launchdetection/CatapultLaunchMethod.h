@@ -44,7 +44,7 @@
 #include "LaunchMethod.h"
 
 #include <drivers/drv_hrt.h>
-#include <px4_module_params.h>
+#include <px4_platform_common/module_params.h>
 
 namespace launchdetection
 {
@@ -55,23 +55,22 @@ public:
 	CatapultLaunchMethod(ModuleParams *parent);
 	~CatapultLaunchMethod() override = default;
 
-	void update(float accel_x) override;
+	void update(const float dt, float accel_x) override;
 	LaunchDetectionResult getLaunchDetected() const override;
 	void reset() override;
 	float getPitchMax(float pitchMaxDefault) override;
 
 private:
-	hrt_abstime _last_timestamp{0};
 	float _integrator{0.0f};
 	float _motorDelayCounter{0.0f};
 
 	LaunchDetectionResult state{LAUNCHDETECTION_RES_NONE};
 
 	DEFINE_PARAMETERS(
-		(ParamFloat<px4::params::LAUN_CAT_A>) _thresholdAccel,
-		(ParamFloat<px4::params::LAUN_CAT_T>) _thresholdTime,
-		(ParamFloat<px4::params::LAUN_CAT_MDEL>) _motorDelay,
-		(ParamFloat<px4::params::LAUN_CAT_PMAX>) _pitchMaxPreThrottle /**< Upper pitch limit before throttle is turned on.
+		(ParamFloat<px4::params::LAUN_CAT_A>) _param_laun_cat_a,
+		(ParamFloat<px4::params::LAUN_CAT_T>) _param_laun_cat_t,
+		(ParamFloat<px4::params::LAUN_CAT_MDEL>) _param_laun_cat_mdel,
+		(ParamFloat<px4::params::LAUN_CAT_PMAX>) _param_laun_cat_pmax /**< Upper pitch limit before throttle is turned on.
 						       Can be used to make sure that the AC does not climb
 						       too much while attached to a bungee */
 	)

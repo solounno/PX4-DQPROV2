@@ -37,13 +37,13 @@
  * LED driver to control the onboard LED(s) via ioctl interface.
  */
 
-#include <px4_config.h>
-#include <drivers/device/device.h>
+#include <px4_platform_common/px4_config.h>
+#include <lib/cdev/CDev.hpp>
 #include <drivers/drv_board_led.h>
 #include <stdio.h>
 
 /*
- * Ideally we'd be able to get these from up_internal.h,
+ * Ideally we'd be able to get these from arm_internal.h,
  * but since we want to be able to disable the NuttX use
  * of leds for system indication at will and there is no
  * separate switch, we need to build independent of the
@@ -56,36 +56,36 @@ extern void led_off(int led);
 extern void led_toggle(int led);
 __END_DECLS
 
-class LED : device::CDev
+class LED : cdev::CDev
 {
 public:
 	LED();
-	virtual ~LED();
+	~LED() override = default;
 
-	virtual int		init();
-	virtual int		ioctl(device::file_t *filp, int cmd, unsigned long arg);
+	int	init() override;
+	int	ioctl(cdev::file_t *filp, int cmd, unsigned long arg) override;
 };
 
-LED::LED() : CDev("led", LED0_DEVICE_PATH)
+LED::LED() : CDev(LED0_DEVICE_PATH)
 {
 	// force immediate init/device registration
 	init();
 }
 
-LED::~LED() = default;
-
 int
 LED::init()
 {
-	DEVICE_DEBUG("LED::init");
+	PX4_DEBUG("LED::init");
+
 	CDev::init();
+
 	led_init();
 
 	return 0;
 }
 
 int
-LED::ioctl(device::file_t *filp, int cmd, unsigned long arg)
+LED::ioctl(cdev::file_t *filp, int cmd, unsigned long arg)
 {
 	int result = OK;
 
